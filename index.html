@@ -1,0 +1,426 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Jumps Dispatch Console</title>
+    <!-- Load Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Load React and Babel for JSX transformation -->
+    <script src="https://unpkg.com/react@18/umd/react.development.js"></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <!-- Load Firebase SDKs -->
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, doc, setDoc, onSnapshot } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        // Global definitions for the embedded script to access
+        window.initializeApp = initializeApp;
+        window.getAuth = getAuth;
+        window.signInAnonymously = signInAnonymously;
+        window.signInWithCustomToken = signInWithCustomToken;
+        window.getFirestore = getFirestore;
+        window.doc = doc;
+        window.setDoc = setDoc;
+        window.onSnapshot = onSnapshot;
+
+        // --- IMPORTANT: DEFINE YOUR ENVIRONMENT VARIABLES HERE ---
+        const PLACEHOLDER_API_KEY = "YOUR_API_KEY";
+        const PLACEHOLDER_PROJECT_ID = "YOUR_PROJECT_ID";
+        
+        let customAppId = 'your-jumps-dispatch-app-id'; 
+        let customFirebaseConfig = {
+            apiKey: PLACEHOLDER_API_KEY,
+            authDomain: PLACEHOLDER_PROJECT_ID + ".firebaseapp.com",
+            projectId: PLACEHOLDER_PROJECT_ID,
+            storageBucket: PLACEHOLDER_PROJECT_ID + ".appspot.com",
+            messagingSenderId: "YOUR_SENDER_ID",
+            appId: "YOUR_APP_ID"
+        };
+        let customAuthToken = null; 
+
+        // Check if the configuration is still using placeholders
+        if (customFirebaseConfig.apiKey === PLACEHOLDER_API_KEY || customFirebaseConfig.projectId === PLACEHOLDER_PROJECT_ID) {
+            console.warn("Firebase configuration is using placeholders. Entering DEMO MODE.");
+            // Set to empty/fallback values to gracefully skip initialization in React component
+            window.__app_id = 'demo-mode-app'; 
+            window.__firebase_config = JSON.stringify({}); // Pass empty object to trigger exit condition
+            window.__initial_auth_token = null; 
+        } else {
+            // Valid configuration found (assuming user edited it)
+            window.__app_id = customAppId;
+            window.__firebase_config = JSON.stringify(customFirebaseConfig);
+            window.__initial_auth_token = customAuthToken; 
+        }
+        // --------------------------------------------------------
+    </script>
+    <style>
+        /* Define the custom pulse animation */
+        @keyframes pulse-once {
+            0% { transform: scale(1.0); box-shadow: 0 0 0 0 rgba(220, 38, 38, 0.7); }
+            50% { transform: scale(1.02); box-shadow: 0 0 20px 5px rgba(220, 38, 38, 0.9); }
+            100% { transform: scale(1.0); box-shadow: none; }
+        }
+        .animate-pulse-once {
+            animation: pulse-once 0.8s ease-out 1;
+        }
+    </style>
+</head>
+<body>
+    <div id="root"></div>
+
+    <script type="text/babel">
+        const { useState, useEffect, useCallback, useMemo } = React;
+
+        // Access globals defined in the module script tag
+        const initializeApp = window.initializeApp;
+        const getAuth = window.getAuth;
+        const signInAnonymously = window.signInAnonymously;
+        const signInWithCustomToken = window.signInWithCustomToken;
+        const getFirestore = window.getFirestore;
+        const doc = window.doc;
+        const setDoc = window.setDoc;
+        const onSnapshot = window.onSnapshot;
+
+        const appId = typeof window.__app_id !== 'undefined' ? window.__app_id : 'default-app-id';
+        const firebaseConfig = typeof window.__firebase_config !== 'undefined' ? JSON.parse(window.__firebase_config) : {};
+        const initialAuthToken = typeof window.__initial_auth_token !== 'undefined' ? window.__initial_auth_token : null;
+
+        // Helper to format timestamp
+        const formatTimestamp = (timestamp) => {
+          if (!timestamp) return 'N/A';
+          const date = new Date(timestamp);
+          // Use hour12: true for a more common clock format if preferred, otherwise false
+          return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false });
+        };
+
+        // Component to display the latest received alert prominently
+        const AlertDisplay = ({ alert, userId }) => {
+          if (!alert || !alert.message) return null;
+
+          // Do not show the alert if the current user was the one who just sent it
+          if (alert.senderId === userId && (Date.now() - alert.timestamp) < 5000) {
+            return null;
+          }
+
+          return (
+            <div className="fixed inset-0 bg-red-900/90 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+              <div className="bg-white rounded-2xl shadow-2xl p-6 sm:p-8 w-full max-w-xl text-center border-4 border-red-500 animate-pulse-once">
+                <h2 className="text-5xl font-extrabold text-red-700 mb-4 tracking-tight">
+                  !! JUMP ALERT !!
+                </h2>
+                <div className="text-2xl font-semibold text-gray-800 p-4 bg-red-50 rounded-lg">
+                  {alert.message}
+                </div>
+                <p className="text-sm text-gray-600 mt-4">
+                  Received at: {formatTimestamp(alert.timestamp)}
+                </p>
+              </div>
+            </div>
+          );
+        };
+
+        // The main, default-exported component must be named App
+        const App = () => {
+          const [messageText, setMessageText] = useState('');
+          const [selectedUnits, setSelectedUnits] = useState({
+            Engine: false,
+            Truck: false,
+            Squad: false,
+          });
+          const [statusMessage, setStatusMessage] = useState('');
+          const [isLoading, setIsLoading] = useState(false);
+          const [isAuthReady, setIsAuthReady] = useState(false);
+          const [db, setDb] = useState(null);
+          const [auth, setAuth] = useState(null);
+          const [userId, setUserId] = useState(null);
+          const [latestAlert, setLatestAlert] = useState(null);
+          const [showReceivedAlert, setShowReceivedAlert] = useState(false);
+          const [isDemoMode, setIsDemoMode] = useState(false); // New state for demo mode
+
+          // 1. Firebase Initialization and Authentication
+          useEffect(() => {
+            if (Object.keys(firebaseConfig).length === 0) {
+              console.error("Firebase config is missing or invalid. Running in DEMO MODE (no external alerts will be sent/received).");
+              setUserId('DEMO_USER_' + Math.random().toString(36).substring(2, 8).toUpperCase());
+              setIsAuthReady(true); 
+              setIsDemoMode(true);
+              return; // Exit early if config is missing/placeholder
+            }
+
+            try {
+              const app = initializeApp(firebaseConfig);
+              const firestore = getFirestore(app);
+              const authInstance = getAuth(app);
+
+              setDb(firestore);
+              setAuth(authInstance);
+
+              const authenticate = async () => {
+                try {
+                  if (initialAuthToken) {
+                    await signInWithCustomToken(authInstance, initialAuthToken);
+                  } else {
+                    await signInAnonymously(authInstance);
+                  }
+                  setUserId(authInstance.currentUser.uid);
+                } catch (error) {
+                  console.error("Firebase Authentication failed:", error);
+                  // Since the error occurred, fallback to Demo Mode
+                  setUserId('AUTH_FAIL_USER');
+                  setIsDemoMode(true);
+                } finally {
+                  setIsAuthReady(true);
+                }
+              };
+              authenticate();
+              
+              // Request Notification Permission
+              if ('Notification' in window) {
+                Notification.requestPermission().then(permission => {
+                  if (permission !== 'granted') {
+                    console.warn("Notification permission denied. Cannot send browser alerts.");
+                  }
+                });
+              }
+
+            } catch (error) {
+              console.error("Error initializing Firebase:", error);
+            }
+          }, []);
+
+          // 2. Real-time Alert Listener (Runs only if not in Demo Mode)
+          useEffect(() => {
+            if (!db || !isAuthReady || isDemoMode) return;
+
+            // Path: /artifacts/{appId}/public/data/alerts/latest
+            const alertDocRef = doc(db, `artifacts/${appId}/public/data/alerts/latest`);
+
+            const unsubscribe = onSnapshot(alertDocRef, (docSnap) => {
+              if (docSnap.exists()) {
+                const newAlert = docSnap.data();
+
+                // Check if the alert is genuinely new (not the first load or sent by the current user)
+                if (latestAlert && newAlert.timestamp > latestAlert.timestamp && newAlert.senderId !== userId) {
+                  
+                  // Trigger the prominent in-app display
+                  setLatestAlert(newAlert);
+                  setShowReceivedAlert(true);
+                  
+                  // Attempt to trigger a system/browser notification banner
+                  if ('Notification' in window && Notification.permission === 'granted') {
+                    new Notification('!! JUMP ALERT RECEIVED !!', {
+                      body: newAlert.message,
+                      icon: 'https://placehold.co/64x64/FF0000/FFFFFF?text=JUMP',
+                      silent: false,
+                    });
+                  }
+                  
+                  // Hide the alert after a few seconds
+                  setTimeout(() => setShowReceivedAlert(false), 8000);
+                }
+                
+                // Always store the latest one for comparison on next update
+                setLatestAlert(newAlert);
+
+              } else {
+                setLatestAlert(null);
+              }
+            }, (error) => {
+              console.error("Error listening to alerts:", error);
+            });
+
+            return () => unsubscribe(); // Cleanup listener on component unmount
+          }, [db, isAuthReady, userId, latestAlert, isDemoMode]); // Added isDemoMode dependency
+
+          // 3. Button Toggle Logic
+          const toggleUnit = useCallback((unit) => {
+            setSelectedUnits(prev => ({
+              ...prev,
+              [unit]: !prev[unit]
+            }));
+            setStatusMessage('');
+          }, []);
+
+          // 4. Message Construction
+          const constructedMessage = useMemo(() => {
+            const activeUnits = Object.keys(selectedUnits).filter(unit => selectedUnits[unit]);
+            const unitsString = activeUnits.join(' / ');
+
+            if (!unitsString) return '';
+
+            // Format: "TEXT" UNIT_STRING or UNIT_STRING
+            const textPart = messageText.trim();
+            if (textPart) {
+              return `${textPart.toUpperCase()} ${unitsString}`;
+            }
+            return unitsString;
+          }, [messageText, selectedUnits]);
+
+
+          // 5. Send Alert Function (Writes to Firestore)
+          const handleSend = async () => {
+            if (isDemoMode) {
+              setStatusMessage('❌ Error: Currently in DEMO MODE. Please replace placeholder Firebase keys to send alerts.');
+              setTimeout(() => setStatusMessage(''), 5000);
+              return;
+            }
+            if (!db || !isAuthReady) {
+              setStatusMessage('Error: App is not ready or user is not authenticated.');
+              return;
+            }
+
+            const unitsSelected = Object.values(selectedUnits).some(Boolean);
+            if (!unitsSelected) {
+              setStatusMessage('⚠️ Please select at least one unit (Engine, Truck, or Squad).');
+              return;
+            }
+
+            setIsLoading(true);
+            setStatusMessage('Sending alert...');
+
+            const message = constructedMessage;
+
+            // Path: /artifacts/{appId}/public/data/alerts/latest
+            const alertDocRef = doc(db, `artifacts/${appId}/public/data/alerts/latest`);
+
+            const alertData = {
+              message: message,
+              timestamp: Date.now(),
+              senderId: userId,
+              selectedUnits: selectedUnits,
+              rawText: messageText.trim()
+            };
+
+            try {
+              // Clear any currently displayed received alerts when sending a new one
+              setShowReceivedAlert(false);
+
+              await setDoc(alertDocRef, alertData);
+              setStatusMessage('✅ Alert Sent successfully!');
+              setMessageText(''); // Clear text box after successful send
+              setSelectedUnits({ Engine: false, Truck: false, Squad: false }); // Clear units
+            } catch (error) {
+              console.error("Error sending alert to Firestore:", error);
+              setStatusMessage(`❌ Error sending alert: ${error.message}`);
+            } finally {
+              setIsLoading(false);
+              setTimeout(() => setStatusMessage(''), 5000);
+            }
+          };
+
+          const unitButtons = ['Engine', 'Truck', 'Squad'];
+          
+          const headerStatus = isDemoMode 
+            ? 'DEMO MODE (Configuration Missing)' 
+            : isAuthReady 
+              ? `User: ${userId}` 
+              : 'Connecting...';
+
+          return (
+            <div className="min-h-screen bg-gray-50 flex items-start justify-center p-4 sm:p-6 font-sans">
+              <div className="w-full max-w-lg bg-white shadow-2xl rounded-xl p-6 sm:p-8 space-y-6 border border-gray-100">
+
+                {/* Header */}
+                <header className="border-b pb-4 mb-4">
+                  <h1 className="text-4xl font-extrabold text-red-700 text-center tracking-tight">
+                    Jumps.
+                  </h1>
+                  <p className={`text-sm text-center mt-1 ${isDemoMode ? 'text-red-500 font-bold' : 'text-gray-500'}`}>
+                    Dispatch Console ({headerStatus})
+                  </p>
+                </header>
+
+                {/* Text Input */}
+                <div className="space-y-2">
+                  <label htmlFor="messageInput" className="text-sm font-medium text-gray-700 block">
+                    Optional Message Text
+                  </label>
+                  <textarea
+                    id="messageInput"
+                    rows="2"
+                    value={messageText}
+                    onChange={(e) => {
+                      setMessageText(e.target.value);
+                      setStatusMessage('');
+                    }}
+                    placeholder="E.g., MVA, 412 Main St..."
+                    className="w-full p-3 border border-gray-300 rounded-lg focus:ring-red-500 focus:border-red-500 transition duration-150 ease-in-out resize-none shadow-inner text-gray-800"
+                    disabled={isLoading || !isAuthReady || isDemoMode}
+                  />
+                </div>
+
+                {/* Unit Selection Buttons */}
+                <div className="space-y-2">
+                  <p className="text-sm font-medium text-gray-700">
+                    Select Units to Dispatch (Required)
+                  </p>
+                  <div className="flex justify-between space-x-3">
+                    {unitButtons.map((unit) => (
+                      <button
+                        key={unit}
+                        onClick={() => toggleUnit(unit)}
+                        className={`
+                          flex-1 py-4 text-center text-lg font-semibold rounded-xl transition-all duration-200 ease-in-out transform shadow-md
+                          ${selectedUnits[unit]
+                            ? 'bg-red-600 text-white ring-4 ring-red-300 scale-105'
+                            : 'bg-gray-200 text-gray-700 hover:bg-gray-300 hover:shadow-lg'
+                          }
+                        `}
+                        disabled={isLoading || !isAuthReady || isDemoMode}
+                      >
+                        {unit.toUpperCase()}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Preview and Send */}
+                <div className="pt-4 space-y-4 border-t">
+                  <div className="p-3 bg-red-50 border-l-4 border-red-400 rounded-lg text-sm font-mono text-gray-800 break-words">
+                    <span className="font-semibold text-gray-600">ALERT PREVIEW:</span> <br/>
+                    {constructedMessage || "Select units and optionally enter text to see the alert message."}
+                  </div>
+
+                  <button
+                    onClick={handleSend}
+                    className="w-full py-4 bg-green-600 text-white text-xl font-bold rounded-xl shadow-lg hover:bg-green-700 transition duration-150 ease-in-out disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center space-x-2"
+                    disabled={!constructedMessage || isLoading || !isAuthReady || isDemoMode}
+                  >
+                    {isLoading ? (
+                      <svg className="animate-spin h-5 w-5 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                      </svg>
+                    ) : (
+                      <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8m-8-3l-3 3-3-3m9 3l3-3 3 3m-6 3V3"></path></svg>
+                    )}
+                    <span>{isLoading ? 'Sending...' : 'SEND ALERT'}</span>
+                  </button>
+                </div>
+
+                {/* Status Message */}
+                {statusMessage && (
+                  <div className={`p-3 rounded-lg text-center font-medium ${statusMessage.startsWith('✅') ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'}`}>
+                    {statusMessage}
+                  </div>
+                )}
+              </div>
+              
+              {/* Real-time Alert Notification */}
+              {/* Note: This component won't show in Demo Mode as alerts are not being received from a database */}
+              {showReceivedAlert && !isDemoMode && <AlertDisplay alert={latestAlert} userId={userId} />}
+
+            </div>
+          );
+        };
+
+        // Render the App component
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<App />);
+
+    </script>
+</body>
+</html>
