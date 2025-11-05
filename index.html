@@ -26,35 +26,43 @@
         window.setDoc = setDoc;
         window.onSnapshot = onSnapshot;
 
-        // --- IMPORTANT: DEFINE YOUR ENVIRONMENT VARIABLES HERE ---
-        const PLACEHOLDER_API_KEY = "YOUR_API_KEY";
-        const PLACEHOLDER_PROJECT_ID = "YOUR_PROJECT_ID";
-        
-        let customAppId = 'your-jumps-dispatch-app-id'; 
-        let customFirebaseConfig = {
-            apiKey: PLACEHOLDER_API_KEY,
-            authDomain: PLACEHOLDER_PROJECT_ID + ".firebaseapp.com",
-            projectId: PLACEHOLDER_PROJECT_ID,
-            storageBucket: PLACEHOLDER_PROJECT_ID + ".appspot.com",
-            messagingSenderId: "YOUR_SENDER_ID",
-            appId: "YOUR_APP_ID"
+        // --- REQUIRED: PASTE YOUR FIREBASE CONFIGURATION HERE ---
+        // I have pre-filled this section using the configuration you provided above.
+        // If you need to change anything later, these are the lines to edit.
+        // --------------------------------------------------------
+        const USER_FIREBASE_CONFIG = {
+            apiKey: "AIzaSyCrHJ7TC9G8YhVL1b6Q2FM0CT4ugYapWmM",
+            authDomain: "jumps-dispatch-system.firebaseapp.com",
+            projectId: "jumps-dispatch-system",
+            storageBucket: "jumps-dispatch-system.firebasestorage.app",
+            messagingSenderId: "41478439327",
+            appId: "1:41478439327:web:85f444028a8b027b647daa"
         };
-        let customAuthToken = null; 
+        // --------------------------------------------------------
 
-        // Check if the configuration is still using placeholders
-        if (customFirebaseConfig.apiKey === PLACEHOLDER_API_KEY || customFirebaseConfig.projectId === PLACEHOLDER_PROJECT_ID) {
-            console.warn("Firebase configuration is using placeholders. Entering DEMO MODE.");
-            // Set to empty/fallback values to gracefully skip initialization in React component
+        // This is a unique identifier used for the Firestore path. 
+        // It helps keep data for this specific app instance separate from others.
+        const USER_APP_ARTIFACT_ID = 'jumps-dispatch-live-001'; 
+        // We are using anonymous sign-in, so this token remains null.
+        const USER_AUTH_TOKEN = null; 
+        
+        // Internal logic to check for placeholders (now checking for empty strings/missing keys)
+        const isConfigMissing = !USER_FIREBASE_CONFIG.apiKey || 
+                                !USER_FIREBASE_CONFIG.projectId ||
+                                !USER_FIREBASE_CONFIG.appId;
+
+        if (isConfigMissing) {
+            console.error("Firebase config is incomplete. Entering DEMO MODE.");
+            // Set values that trigger DEMO MODE in the React component
             window.__app_id = 'demo-mode-app'; 
-            window.__firebase_config = JSON.stringify({}); // Pass empty object to trigger exit condition
+            window.__firebase_config = JSON.stringify({}); 
             window.__initial_auth_token = null; 
         } else {
-            // Valid configuration found (assuming user edited it)
-            window.__app_id = customAppId;
-            window.__firebase_config = JSON.stringify(customFirebaseConfig);
-            window.__initial_auth_token = customAuthToken; 
+            // Set values for successful initialization
+            window.__app_id = USER_APP_ARTIFACT_ID;
+            window.__firebase_config = JSON.stringify(USER_FIREBASE_CONFIG);
+            window.__initial_auth_token = USER_AUTH_TOKEN; 
         }
-        // --------------------------------------------------------
     </script>
     <style>
         /* Define the custom pulse animation */
@@ -85,8 +93,11 @@
         const onSnapshot = window.onSnapshot;
 
         const appId = typeof window.__app_id !== 'undefined' ? window.__app_id : 'default-app-id';
+        // The core check: if the config is an empty object, we are in Demo Mode.
         const firebaseConfig = typeof window.__firebase_config !== 'undefined' ? JSON.parse(window.__firebase_config) : {};
         const initialAuthToken = typeof window.__initial_auth_token !== 'undefined' ? window.__initial_auth_token : null;
+
+        const isDemoModeInitial = Object.keys(firebaseConfig).length === 0;
 
         // Helper to format timestamp
         const formatTimestamp = (timestamp) => {
@@ -101,6 +112,7 @@
           if (!alert || !alert.message) return null;
 
           // Do not show the alert if the current user was the one who just sent it
+          // This prevents the sender from immediately seeing their own alert pop-up
           if (alert.senderId === userId && (Date.now() - alert.timestamp) < 5000) {
             return null;
           }
@@ -138,16 +150,16 @@
           const [userId, setUserId] = useState(null);
           const [latestAlert, setLatestAlert] = useState(null);
           const [showReceivedAlert, setShowReceivedAlert] = useState(false);
-          const [isDemoMode, setIsDemoMode] = useState(false); // New state for demo mode
+          const [isDemoMode, setIsDemoMode] = useState(isDemoModeInitial); // Use the initial check result
 
           // 1. Firebase Initialization and Authentication
           useEffect(() => {
-            if (Object.keys(firebaseConfig).length === 0) {
+            if (isDemoModeInitial) {
               console.error("Firebase config is missing or invalid. Running in DEMO MODE (no external alerts will be sent/received).");
               setUserId('DEMO_USER_' + Math.random().toString(36).substring(2, 8).toUpperCase());
               setIsAuthReady(true); 
               setIsDemoMode(true);
-              return; // Exit early if config is missing/placeholder
+              return; 
             }
 
             try {
@@ -168,9 +180,10 @@
                   setUserId(authInstance.currentUser.uid);
                 } catch (error) {
                   console.error("Firebase Authentication failed:", error);
-                  // Since the error occurred, fallback to Demo Mode
+                  // If auth fails for another reason, fall back to Demo Mode and show error
                   setUserId('AUTH_FAIL_USER');
                   setIsDemoMode(true);
+                  setStatusMessage('Auth failed. Check console for details. Reverting to DEMO MODE.');
                 } finally {
                   setIsAuthReady(true);
                 }
@@ -189,7 +202,7 @@
             } catch (error) {
               console.error("Error initializing Firebase:", error);
             }
-          }, []);
+          }, []); // Empty dependency array means this runs only once
 
           // 2. Real-time Alert Listener (Runs only if not in Demo Mode)
           useEffect(() => {
@@ -233,7 +246,7 @@
             });
 
             return () => unsubscribe(); // Cleanup listener on component unmount
-          }, [db, isAuthReady, userId, latestAlert, isDemoMode]); // Added isDemoMode dependency
+          }, [db, isAuthReady, userId, latestAlert, isDemoMode]); 
 
           // 3. Button Toggle Logic
           const toggleUnit = useCallback((unit) => {
@@ -316,7 +329,7 @@
           const headerStatus = isDemoMode 
             ? 'DEMO MODE (Configuration Missing)' 
             : isAuthReady 
-              ? `User: ${userId}` 
+              ? `User ID: ${userId}` 
               : 'Connecting...';
 
           return (
